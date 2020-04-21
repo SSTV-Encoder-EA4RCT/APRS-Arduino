@@ -1,0 +1,15 @@
+[submodule "lib/Adafruit_GPS"]
+	path = lib/Adafruit_GPS
+	url = https://github.com/adafruit/Adafruit_GPS.git
+[submodule "lib/DueTimer"]
+	path = lib/DueTimer
+	url = https://github.com/ivanseidel/DueTimer.git
+[submodule "lib/lps-arduino"]
+	path = lib/lps-arduino
+	url = https://github.com/pololu/lps-arduino.git
+[submodule "lib/lis3mdl-arduino"]
+	path = lib/lis3mdl-arduino
+	url = https://github.com/pololu/lis3mdl-arduino.git
+[submodule "lib/lsm6-arduino"]
+	path = lib/lsm6-arduino
+	url = https://github.com/pololu/lsm6-arduino.git
