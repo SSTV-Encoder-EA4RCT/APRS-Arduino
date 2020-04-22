@@ -1,39 +1,24 @@
-/**
- * @author: Fran Acién and David Arias, with the help of Pablo Alvarez and Dani Kholer
- *  APRS emitter using arduino DUE
+/*
+ *  Copyright (C) 2018 - Handiko Gesang - www.github.com/handiko
  *
-**/
-
-#include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_GPS.h>
-#include <DueTimer.h>
-#include <LIS3MDL.h>
-#include <LSM6.h>
-#include <LPS.h>
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include <math.h>
 #include <stdio.h>
+#include <SoftwareSerial.h>
 
-// Structures
-
-typedef struct {
-  float pressure;
-  float altitude;
-  float temperature;
-} Bar;
-
-// Imu template
-template <typename T> struct vector{
-  T x, y, z;
-};
-
-typedef struct {
-  bool fix;
-  float lat;
-  float lon;
-} Gps;
-
-// Constants
+// Defines the Square Wave Output Pin
 #define OUT_PIN 12
 
 #define _1200   1
@@ -52,32 +37,16 @@ typedef struct {
 #define _STATUS         4
 #define _BEACON         5
 
-#define buzzPin 2
+// Defines the Dorji Control PIN
+#define _PTT      7
+#define _PD       6
+#define _POW      5
 
-#define GPSSerial Serial3
+#define DRJ_TXD 10
+#define DRJ_RXD 11
 
-// Set GPSECHO to 'false' to turn off echoing the GPS data to the Serial console
-// Set to 'true' if you want to debug and listen to the raw GPS sentences
-#define GPSECHO false
+SoftwareSerial dorji(DRJ_RXD, DRJ_TXD);
 
-Adafruit_GPS GPS(&GPSSerial);
-
-uint32_t timer = millis();
-
-// Magnetometer LIS3MDL
-LIS3MDL mag;
-vector<int16_t> m; // magnetometer readings
-
-// Accelerometer LSM6DS33
-LSM6 imu;
-vector<int16_t> a; // accelerometer readings
-vector<int16_t> g; // gyro readings
-
-// Barometer LPS25H
-LPS ps;
-Bar bar;
-
-// AFSK Vars
 bool nada = _2400;
 
 /*
@@ -118,18 +87,20 @@ unsigned int tc2400 = (unsigned int)(0.5 * adj_2400 * 1000000.0 / 2400.0);
 /*
  * This strings will be used to generate AFSK signals, over and over again.
  */
-char mycall[8] = "EA4RCT";
-char myssid = 11;
+char mycall[8] = "MYCALL";
+char myssid = 1;
 
-char dest[8] = "APZ";     // Experimental see http://aprs.org/aprs11/tocalls.txt
+char dest[8] = "APZ";
 char dest_beacon[8] = "BEACON";
 
 char digi[8] = "WIDE2";
 char digissid = 2;
 
-char comment[128] = "RadioClub EIT";
+char comment[128] = "www.github.com/handiko";
 char mystatus[128] = "..::| Experimental Arduino-APRS |::..";
 
+char lati[9];
+char lon[10];
 int coord_valid;
 const char sym_ovl = 'T';
 const char sym_tab = 'a';
@@ -140,18 +111,13 @@ unsigned int str_len = 400;
 char bit_stuff = 0;
 unsigned short crc=0xffff;
 
+SoftwareSerial gps = SoftwareSerial(8,9);
 char rmc[100];
 char rmc_stat;
 
-// Function prototypes
-void timer2_interrupt(void);
-void read_mad(vector<int16_t>* m);
-void read_imu(vector<int16_t>* a, vector<int16_t>* g);
-void read_bar(Bar* res);
-void print_altimu(void);  // Print values of mad imu and bar
-void tone(uint32_t ulPin, uint32_t frequency, int32_t duration);  //Tone using buzzer
-void noTone(uint32_t ulPin);    // Tone using Buzzer
-
+/*
+ *
+ */
 void set_nada_1200(void);
 void set_nada_2400(void);
 void set_nada(bool nada);
@@ -161,186 +127,24 @@ void send_string_len(const char *in_string, int len);
 
 void calc_crc(bool in_bit);
 void send_crc(void);
-void randomize(unsigned int &var, unsigned int low, unsigned int high);
 
 void send_packet(char packet_type);
 void send_flag(unsigned char flag_len);
 void send_header(char msg_type);
 void send_payload(char type);
 
+char rx_gprmc(void);
+char parse_gprmc(void);
+
+void set_io(void);
 void print_code_version(void);
 void print_debug(char type);
-
-void setup() {
-  Serial.begin(9600);
-  Wire.begin();   // i2C begin
-  Serial.println("Adafruit GPS library basic test!");
-
-  // Start magnetometer
-  if (!mag.init()){
-    Serial.println("Failed to detect and initialize magnetometer!");
-    while (1);
-  }
-
-  mag.enableDefault();
-
-  // Start accelerometer
-  if (!imu.init())
-  {
-    Serial.println("Failed to detect and initialize IMU!");
-    while (1);
-  }
-  imu.enableDefault();
-
-  // Start barometer
-  if (!ps.init())
-  {
-    Serial.println("Failed to autodetect pressure sensor!");
-    while (1);
-  }
-
-  ps.enableDefault();
-
-  // Start GPS
-  GPS.begin(9600);
-
-  // uncomment this line to turn on RMC (recommended minimum) and GGA (fix data) including altitude
-  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
-  // uncomment this line to turn on only the "minimum recommended" data
-  //GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
-
-  // Set the update rate
-  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ); // 1 Hz update rate
-
-  // Request updates on antenna status, comment out to keep quiet
-  GPS.sendCommand(PGCMD_ANTENNA);
-
-  delay(1000);
-
-  // Ask for firmware version
-  GPSSerial.println(PMTK_Q_RELEASE);
-
-  // Setup Timer with the emision interval
-  //Timer2.attachInterrupt(timer2_interrupt).start(1000); // Read GPS every millisecond *****
-}
-
-void loop() {
-  parse_gprmc();
-  coord_valid = get_coord();
-
-  if(rmc_stat > 10){
-    //send_packet(random(1,4), random(1,3));
-    if(coord_valid > 0)
-      send_packet(_FIXPOS);
-    else
-      send_packet(_BEACON);
-  }
-
-  delay(tx_delay);
-  randomize(tx_delay, 5000, 9000);
-}
-
-void timer2_interrupt(){
-  // read data from the GPS in the 'main loop'
-  char c = GPS.read();
-  // if you want to debug, this is a good time to do it!
-  if (GPSECHO)
-  if (c) Serial.print(c);
-  // if a sentence is received, we can check the checksum, parse it...
-  if (GPS.newNMEAreceived()) {
-    // a tricky thing here is if we print the NMEA sentence, or data
-    // we end up not listening and catching other sentences!
-    // so be very wary if using OUTPUT_ALLDATA and trying to print out data
-    Serial.println(GPS.lastNMEA()); // this also sets the newNMEAreceived() flag to false
-    if (!GPS.parse(GPS.lastNMEA())) // this also sets the newNMEAreceived() flag to false
-    return; // we can fail to parse a sentence in which case we should just wait for another
-  }
-  // if millis() or timer wraps around, we'll just reset it
-  if (timer > millis()) timer = millis();
-
-  // approximately every 2 seconds or so, print out the current stats
-  if (millis() - timer > 2000) {
-    timer = millis(); // reset the timer
-    Serial.print("\nTime: ");
-    if (GPS.hour < 10) { Serial.print('0'); }
-    Serial.print(GPS.hour, DEC); Serial.print(':');
-    if (GPS.minute < 10) { Serial.print('0'); }
-    Serial.print(GPS.minute, DEC); Serial.print(':');
-    if (GPS.seconds < 10) { Serial.print('0'); }
-    Serial.print(GPS.seconds, DEC); Serial.print('.');
-    if (GPS.milliseconds < 10) {
-      Serial.print("00");
-    } else if (GPS.milliseconds > 9 && GPS.milliseconds < 100) {
-      Serial.print("0");
-    }
-    Serial.println(GPS.milliseconds);
-    Serial.print("Date: ");
-    Serial.print(GPS.day, DEC); Serial.print('/');
-    Serial.print(GPS.month, DEC); Serial.print("/20");
-    Serial.println(GPS.year, DEC);
-    Serial.print("Fix: "); Serial.print((int)GPS.fix);
-    Serial.print(" quality: "); Serial.println((int)GPS.fixquality);
-    if (GPS.fix) {
-      Serial.print("Location: ");
-      Serial.print(GPS.latitude, 4); Serial.print(GPS.lat);
-      Serial.print(", ");
-      Serial.print(GPS.longitude, 4); Serial.println(GPS.lon);
-      Serial.print("Speed (knots): "); Serial.println(GPS.speed);
-      Serial.print("Angle: "); Serial.println(GPS.angle);
-      Serial.print("Altitude: "); Serial.println(GPS.altitude);
-      Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
-    }
-  }
-}
-
-void read_mad(vector<int16_t>* m){
-  mag.read();
-  memcpy(m, &mag.m, sizeof(vector<int16_t>));
-}
-
-void read_imu(vector<int16_t>* a, vector<int16_t>* g){
-  imu.read();
-  memcpy(a, &imu.a, sizeof(vector<int16_t>));
-  memcpy(g, &imu.g, sizeof(vector<int16_t>));
-}
-
-void read_bar(Bar* res){
-  res->pressure = ps.readPressureMillibars();
-  res->altitude = ps.pressureToAltitudeMeters(res->pressure);
-  res->temperature = ps.readTemperatureC();
-}
-
-void print_altimu(void){
-  char buff[80];
-  delay(100);
-
-  read_imu(&a, &g);
-  read_mad(&m);
-  read_bar(&bar);
-
-  Serial.println("IMU Values");
-  sprintf(buff, "A: %6d %6d %6d    G: %6d %6d %6d",
-          a.x, a.y, a.z, g.x, g.y, g.z);
-  Serial.println(buff);
-  Serial.println("--------------");
-
-  Serial.println("MAG Values");
-  sprintf(buff, "M: %6d %6d %6d",
-          m.x, m.y, m.z);
-  Serial.println(buff);
-  Serial.println("----------------");
-
-  Serial.println("BAR values");
-  sprintf(buff, "Pressure %f mbar     Altitude: %f m     Temperature: %f deg C",
-          bar.pressure, bar.altitude, bar.temperature);
-  Serial.println(buff);
-  Serial.println("----------------");
-}
 
 /*
  *
  */
-void set_nada_1200(void){
+void set_nada_1200(void)
+{
   digitalWrite(OUT_PIN, true);
   //PORTB |= (1<<PB4);
   delayMicroseconds(tc1200);
@@ -349,7 +153,8 @@ void set_nada_1200(void){
   delayMicroseconds(tc1200);
 }
 
-void set_nada_2400(void){
+void set_nada_2400(void)
+{
   digitalWrite(OUT_PIN, true);
   //PORTB |= (1<<PB4);
   delayMicroseconds(tc2400);
@@ -400,7 +205,8 @@ void send_crc(void)
   send_char_NRZI(crc_hi, true);
 }
 
-void send_header(char msg_type){
+void send_header(char msg_type)
+{
   char temp;
 
   /*
@@ -423,17 +229,20 @@ void send_header(char msg_type){
    */
 
   /********* DEST ***********/
-  if(msg_type == _BEACON){
+  if(msg_type == _BEACON)
+  {
     temp = strlen(dest_beacon);
     for(int j=0; j<temp; j++)
       send_char_NRZI(dest_beacon[j] << 1, true);
   }
-  else{
+  else
+  {
     temp = strlen(dest);
     for(int j=0; j<temp; j++)
       send_char_NRZI(dest[j] << 1, true);
   }
-  if(temp < 6){
+  if(temp < 6)
+  {
     for(int j=0; j<(6 - temp); j++)
       send_char_NRZI(' ' << 1, true);
   }
@@ -445,7 +254,8 @@ void send_header(char msg_type){
   temp = strlen(mycall);
   for(int j=0; j<temp; j++)
     send_char_NRZI(mycall[j] << 1, true);
-  if(temp < 6){
+  if(temp < 6)
+  {
     for(int j=0; j<(6 - temp); j++)
       send_char_NRZI(' ' << 1, true);
   }
@@ -456,7 +266,8 @@ void send_header(char msg_type){
   temp = strlen(digi);
   for(int j=0; j<temp; j++)
     send_char_NRZI(digi[j] << 1, true);
-  if(temp < 6){
+  if(temp < 6)
+  {
     for(int j=0; j<(6 - temp); j++)
       send_char_NRZI(' ' << 1, true);
   }
@@ -467,7 +278,8 @@ void send_header(char msg_type){
   send_char_NRZI(_PID, true);
 }
 
-void send_payload(char type){
+void send_payload(char type)
+{
   /*
    * APRS AX.25 Payloads
    *
@@ -510,22 +322,26 @@ void send_payload(char type){
    * All of the data are sent in the form of ASCII Text, not shifted.
    *
    */
-  if(type == _GPRMC){
+  if(type == _GPRMC)
+  {
     send_char_NRZI('$', true);
     send_string_len(rmc, strlen(rmc)-1);
   }
-  else if(type == _FIXPOS){
+  else if(type == _FIXPOS)
+  {
     send_char_NRZI(_DT_POS, true);
     send_string_len(lati, strlen(lati));
     send_char_NRZI(sym_ovl, true);
     send_string_len(lon, strlen(lon));
     send_char_NRZI(sym_tab, true);
   }
-  else if(type == _STATUS){
+  else if(type == _STATUS)
+  {
     send_char_NRZI(_DT_STATUS, true);
     send_string_len(mystatus, strlen(mystatus));
   }
-  else if(type == _FIXPOS_STATUS){
+  else if(type == _FIXPOS_STATUS)
+  {
     send_char_NRZI(_DT_POS, true);
     send_string_len(lati, strlen(lati));
     send_char_NRZI(sym_ovl, true);
@@ -534,7 +350,8 @@ void send_payload(char type){
 
     send_string_len(comment, strlen(comment));
   }
-  else{
+  else
+  {
     send_string_len(mystatus, strlen(mystatus));
   }
 }
@@ -547,7 +364,8 @@ void send_payload(char type){
  * bit 1 : transmitted as no change in tone
  * bit 0 : transmitted as change in tone
  */
-void send_char_NRZI(unsigned char in_byte, bool enBitStuff){
+void send_char_NRZI(unsigned char in_byte, bool enBitStuff)
+{
   bool bits;
 
   for(int i = 0; i < 8; i++)
@@ -581,12 +399,14 @@ void send_char_NRZI(unsigned char in_byte, bool enBitStuff){
   }
 }
 
-void send_string_len(const char *in_string, int len){
+void send_string_len(const char *in_string, int len)
+{
   for(int j=0; j<len; j++)
     send_char_NRZI(in_string[j], true);
 }
 
-void send_flag(unsigned char flag_len){
+void send_flag(unsigned char flag_len)
+{
   for(int j=0; j<flag_len; j++)
     send_char_NRZI(_FLAG, LOW);
 }
@@ -597,10 +417,12 @@ void send_flag(unsigned char flag_len){
  * delimiter. In this example, 100 flags is used the preamble and 3 flags as
  * the postamble.
  */
-void send_packet(char packet_type){
+void send_packet(char packet_type)
+{
   print_debug(packet_type);
 
   digitalWrite(LED_BUILTIN, HIGH);
+  digitalWrite(_PTT, HIGH);
 
   //delay(100);
 
@@ -634,12 +456,125 @@ void send_packet(char packet_type){
  * Function to randomized the value of a variable with defined low and hi limit value.
  * Used to create random AFSK pulse length.
  */
-void randomize(unsigned int &var, unsigned int low, unsigned int high){
+void randomize(unsigned int &var, unsigned int low, unsigned int high)
+{
   randomSeed(analogRead(A0));
   var = random(low, high);
 }
 
-void print_code_version(void){
+/*
+ *
+ */
+char rx_gprmc(void)
+{
+  char temp;
+  int c=0;
+
+  for(int i=0;i<100;i++)
+    rmc[i]=0;
+
+  do
+  {
+    if(gps.available()>0)
+      temp = gps.read();
+  }
+  while(temp!='$');
+
+  do
+  {
+    if(gps.available()>0)
+    {
+      temp = gps.read();
+      rmc[c] = temp;
+      c++;
+    }
+
+    if(c==5)
+    {
+      if(rmc[4]!='C')
+      {
+        return 0;
+
+        goto esc;
+      }
+    }
+  }
+  while((temp!=10)&&(temp!=13));
+
+  c--;
+
+  return c;
+
+  esc:
+  ;
+}
+
+char parse_gprmc(void)
+{
+  gps.begin(9600);
+
+  rmc_stat = 0;
+  rmc_stat = rx_gprmc();
+
+  gps.flush();
+  gps.end();
+
+  if(rmc_stat > 10)
+    return rmc_stat;
+  else
+    return 0;
+}
+
+int get_coord(void)
+{
+  /* latitude */
+  for(int i=0;i<7;i++)
+  {
+    lati[i] = rmc[i+18];
+  }
+
+  lati[7]=rmc[29];
+
+  /* Longitude */
+  for(int i=0;i<8;i++)
+  {
+    lon[i] = rmc[i+31];
+  }
+
+  lon[8]=rmc[43];
+
+  if(rmc[16]=='A')
+    return 1;
+  else if(rmc[16]=='V')
+    return 0;
+  else
+    return -1;
+}
+
+/*
+ *
+ */
+void set_io(void)
+{
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(OUT_PIN, OUTPUT);
+
+  pinMode(DRJ_RXD, INPUT);
+  pinMode(DRJ_TXD, OUTPUT);
+  pinMode(_PTT, OUTPUT);
+  pinMode(_PD, OUTPUT);
+  pinMode(_POW, OUTPUT);
+
+  digitalWrite(_PTT, LOW);
+  digitalWrite(_PD, HIGH);
+  digitalWrite(_POW, LOW);
+
+  Serial.begin(115200);
+  dorji.begin(9600);
+}
+
+void print_code_version(void)
+{
   Serial.println(" ");
   Serial.print("Sketch:   ");   Serial.println(__FILE__);
   Serial.print("Uploaded: ");   Serial.println(__DATE__);
@@ -648,7 +583,8 @@ void print_code_version(void){
   Serial.println("GPRMC APRS Transmitter - Started ! \n");
 }
 
-void print_debug(char type){
+void print_debug(char type)
+{
   /*
    * PROTOCOL DEBUG.
    *
@@ -716,4 +652,99 @@ void print_debug(char type){
 
   Serial.flush();
   Serial.end();
+}
+
+/*
+ *
+ */
+void dorji_init(SoftwareSerial &ser)
+{
+  ser.println("AT+DMOCONNECT");
+}
+
+void dorji_reset(SoftwareSerial &ser)
+{
+  for(char i=0;i<3;i++)
+    ser.println("AT+DMOCONNECT");
+}
+
+void dorji_setfreq(float txf, float rxf, SoftwareSerial &ser)
+{
+  ser.print("AT+DMOSETGROUP=0,");
+  ser.print(txf, 4);
+  ser.print(',');
+  ser.print(rxf, 4);
+  ser.println(",0000,0,0000");
+}
+
+void dorji_setfilter(bool emph, bool hpf, bool lpf, SoftwareSerial &ser)
+{
+  ser.print("AT+SETFILTER=");
+  ser.print(emph);
+  ser.print(',');
+  ser.print(hpf);
+  ser.print(',');
+  ser.println(lpf);
+}
+
+void dorji_readback(SoftwareSerial &ser)
+{
+  String d;
+
+  while(ser.available() < 1);
+  if(ser.available() > 0)
+  {
+    d = ser.readString();
+    Serial.print(d);
+  }
+}
+
+void dorji_close(SoftwareSerial &ser)
+{
+  ser.end();
+}
+
+/*
+ *
+ */
+void setup()
+{
+  set_io();
+  print_code_version();
+
+  delay(250);
+
+  dorji_reset(dorji);
+  dorji_readback(dorji);
+  delay(1000);
+  dorji_setfreq(144.390, 144.390, dorji);
+  dorji_readback(dorji);
+  delay(1000);
+  dorji_setfilter(0,0,0,dorji);
+  dorji_readback(dorji);
+
+  Serial.println(' ');
+
+  dorji_close(dorji);
+  gps.begin(9600);
+
+  randomSeed(analogRead(A0));
+}
+
+void loop()
+{
+  parse_gprmc();
+  coord_valid = get_coord();
+
+  if(rmc_stat > 10)
+  {
+    //send_packet(random(1,4), random(1,3));
+    if(coord_valid > 0)
+      send_packet(_FIXPOS);
+    else
+      send_packet(_BEACON);
+  }
+
+  delay(tx_delay);
+  randomize(tx_delay, 5000, 9000);
 }
