@@ -33,6 +33,8 @@ typedef struct {
   float lon;
   char latd;
   char lond;
+  char lati[9];     // ddmm.ssN/ or ddmm.ssS/   pg 24 APRS PROTOCOL
+  char loni[10];  //dddmm.ssE- or dddmm.ssW-
 } Gps;
 
 // Constants
@@ -47,12 +49,13 @@ typedef struct {
 #define _DT_EXP     ','
 #define _DT_STATUS  '>'
 #define _DT_POS     '!'
+#define _DT_TEL     'T'
 
-#define _GPRMC          1
-#define _FIXPOS         2
-#define _FIXPOS_STATUS  3
-#define _STATUS         4
-#define _BEACON         5
+#define _FIXPOS         1
+#define _FIXPOS_STATUS  2
+#define _STATUS         3
+#define _BEACON         4
+#define _TELEMETRY      5
 
 #define buzzPin 2
 
@@ -62,9 +65,9 @@ typedef struct {
 // Set to 'true' if you want to debug and listen to the raw GPS sentences
 #define GPSECHO false
 
+// Adafruit GPS
 Adafruit_GPS GPS(&GPSSerial);
-
-uint32_t timer = millis();
+Gps gps;
 
 // Magnetometer LIS3MDL
 LIS3MDL mag;
@@ -132,18 +135,16 @@ char digissid = 2;
 char comment[128] = "RadioClub EIT";
 char mystatus[128] = "..::| Experimental Arduino-APRS |::..";
 
-int coord_valid;
 const char sym_ovl = 'T';
 const char sym_tab = 'a';
+
+uint16_t tel_seq = 0;   // Telemetry seq number
 
 unsigned int tx_delay = 5000;
 unsigned int str_len = 400;
 
 char bit_stuff = 0;
 unsigned short crc=0xffff;
-
-char rmc[100];
-char rmc_stat;
 
 // Function prototypes
 //void timer2_interrupt(void);
@@ -228,16 +229,15 @@ void setup() {
 }
 
 void loop() {
-  Gps gps;
+  read_mad(&m);     // Read magnetometer sensor
+  read_imu(&a, &g); // Read accelerometer and imu sensor
+  read_bar(&bar);
   read_gps(&gps);
 
-  if(rmc_stat > 10){
-    //send_packet(random(1,4), random(1,3));
-    if(coord_valid > 0)
-      send_packet(_FIXPOS);
-    else
-      send_packet(_BEACON);
-  }
+  if(gps.fix)
+    send_packet(_FIXPOS);
+  else
+    send_packet(_BEACON);
 
   delay(tx_delay);
   randomize(tx_delay, 5000, 9000);
@@ -258,9 +258,11 @@ void read_gps(Gps* res){
 
   if (GPS.fix) {
     res->lat = GPS.latitudeDegrees;
-    res->lon = GPS.longitudeDegrees
+    res->lon = GPS.longitudeDegrees;
     res->latd = GPS.lat;
     res->lond = GPS.lon;
+    sprintf(res->lati, "%7.2f%c", GPS.latitude, GPS.lat);
+    sprintf(res->loni, "%8.2f%c", GPS.latitude, GPS.lon);
   }
 }
 
@@ -479,18 +481,24 @@ void send_payload(char type){
    * STATUS TEXT: Free form text
    *
    *
+   * TYPE : TELEMETRY REPORT
+   * ......................................................................................................................................
+   * | DATA TYPE |  SEQ No | ANALOG VALUE 1 | ANALOG VALUE 2 | ANALOG VALUE 3 | ANALOG VALUE 4 | ANALOG VALUE 5 | DIGITAL VALUE | COMMENT |
+   * |  1 BYTE   | 5 BYTES |    4 BYTES     |    4 BYTES     |    4 BYTES     |    4 BYTES     |    4 BYTES     |    8 BYTES    | N BYTES |
+   * |     T     |  #nnn,  |      aaa,      |      aaa,      |      aaa,      |      aaa,      |      aaa,      |    bbbbbbbb   |         |
+   * ......................................................................................................................................
+   *
+   * DATA TYPE: T
+   *
+   *
    * All of the data are sent in the form of ASCII Text, not shifted.
    *
    */
-  if(type == _GPRMC){
-    send_char_NRZI('$', true);
-    send_string_len(rmc, strlen(rmc)-1);
-  }
-  else if(type == _FIXPOS){
+  if(type == _FIXPOS){
     send_char_NRZI(_DT_POS, true);
-    send_string_len(lati, strlen(lati));
+    send_string_len(gps.lati, strlen(gps.lati));
     send_char_NRZI(sym_ovl, true);
-    send_string_len(lon, strlen(lon));
+    send_string_len(gps.loni, strlen(gps.loni));
     send_char_NRZI(sym_tab, true);
   }
   else if(type == _STATUS){
@@ -499,12 +507,27 @@ void send_payload(char type){
   }
   else if(type == _FIXPOS_STATUS){
     send_char_NRZI(_DT_POS, true);
-    send_string_len(lati, strlen(lati));
+    send_string_len(gps.lati, strlen(gps.lati));
     send_char_NRZI(sym_ovl, true);
-    send_string_len(lon, strlen(lon));
+    send_string_len(gps.loni, strlen(gps.loni));
     send_char_NRZI(sym_tab, true);
-
     send_string_len(comment, strlen(comment));
+  }
+  else if(type == _TELEMETRY){
+    send_char_NRZI(_DT_TEL, true);
+    char seq[5];
+    sprintf(seq, "#%03d,", tel_seq);     //Sequence number
+    char an_val[4];
+    sprintf(an_val, "%03d,", ((int) bar.altitude) / 10); //Altitude mod 10
+    send_string_len(an_val, strlen(an_val));
+    sprintf(an_val, "%03d,", (int) bar.temperature); //temperature
+    send_string_len(an_val, strlen(an_val));
+
+
+
+
+
+    tel_seq++;
   }
   else{
     send_string_len(mystatus, strlen(mystatus));
@@ -598,7 +621,6 @@ void send_packet(char packet_type){
   send_crc();
   send_flag(3);
 
-  digitalWrite(_PTT, LOW);
   digitalWrite(LED_BUILTIN, 0);
 }
 
@@ -617,7 +639,7 @@ void print_code_version(void){
   Serial.print("Uploaded: ");   Serial.println(__DATE__);
   Serial.println(" ");
 
-  Serial.println("GPRMC APRS Transmitter - Started ! \n");
+  Serial.println("APRS Transmitter - Started ! \n");
 }
 
 void print_debug(char type){
@@ -651,17 +673,12 @@ void print_debug(char type){
   Serial.print(':');
 
   /******* PAYLOAD ******/
-  if(type == _GPRMC)
-  {
-    Serial.print('$');
-    Serial.print(rmc);
-  }
-  else if(type == _FIXPOS)
+  if(type == _FIXPOS)
   {
     Serial.print(_DT_POS);
-    Serial.print(lati);
+    Serial.print(gps.lati);
     Serial.print(sym_ovl);
-    Serial.print(lon);
+    Serial.print(gps.loni);
     Serial.print(sym_tab);
   }
   else if(type == _STATUS)
@@ -672,9 +689,9 @@ void print_debug(char type){
   else if(type == _FIXPOS_STATUS)
   {
     Serial.print(_DT_POS);
-    Serial.print(lati);
+    Serial.print(gps.lati);
     Serial.print(sym_ovl);
-    Serial.print(lon);
+    Serial.print(gps.loni);
     Serial.print(sym_tab);
 
     Serial.print(comment);
