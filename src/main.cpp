@@ -228,8 +228,8 @@ void setup() {
 }
 
 void loop() {
-  parse_gprmc();
-  coord_valid = get_coord();
+  Gps gps;
+  read_gps(&gps);
 
   if(rmc_stat > 10){
     //send_packet(random(1,4), random(1,3));
