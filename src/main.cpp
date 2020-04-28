@@ -171,7 +171,7 @@ void read_bar(Bar* res);
 void read_gps(Gps* res);
 void read_gps();
 void read_coords(Gps* res);
-void print_altimu(void);  // Print values of mad imu and bar
+void print_sensors(void);  // Print values of mad imu and bar
 
 void set_nada_1200(void);
 void set_nada_2400(void);
@@ -227,47 +227,17 @@ void setup() {
   }
 
   ps.enableDefault();
-  /*
-  // Start GPS
-  GPS.begin(9600);
-
-  // uncomment this line to turn on RMC (recommended minimum) and GGA (fix data) including altitude
-  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
-  // uncomment this line to turn on only the "minimum recommended" data
-  //GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
-
-  // Set the update rate
-  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ); // 1 Hz update rate
-
-  // Request updates on antenna status, comment out to keep quiet
-  GPS.sendCommand(PGCMD_ANTENNA);
-
-  delay(1000);
-
-  // Ask for firmware version
-  GPSSerial.println(PMTK_Q_RELEASE);
-  */
-
-  // Setup Timer with the emision interval
-  //Timer2.attachInterrupt(timer2_interrupt).start(1000); // Read GPS every millisecond *****
 }
 
 void loop() {
-
   read_imu(&a, &g);
   read_mad(&m);
   read_bar(&bar);
-  //read_imu(&a); // Read accelerometer and imu sensor
-  //read_bar(&bar);
   read_gps(&gps);
-  //read_gps();
-  //print_altimu();
-  //delay(30000);
-
 
   // Build telemetry packet
   telpct.dttype = _DT_TEL;
-  sprintf(telpct.seqN, "#%03d,", tel_seq);
+  snprintf(telpct.seqN, sizeof(telpct.seqN), "#%03d,", tel_seq);
   snprintf(telpct.an_1, sizeof(telpct.an_1), "%03d,", (int) abs(bar.altitude));
   snprintf(telpct.an_2, sizeof(telpct.an_2), "%03d,", (int) abs(bar.temperature));
   snprintf(telpct.an_3, sizeof(telpct.an_3), "%03d,", (int) abs(a.x));
@@ -277,7 +247,6 @@ void loop() {
   snprintf(telpct.comment, sizeof(telpct.comment), "%s", comment);
   tel_seq++;
   if(tel_seq == 1000) tel_seq = 0; // Reset telemetry pckt seq number
-
 
   if(gps.fix){
     send_packet(_FIXPOS);
@@ -290,59 +259,7 @@ void loop() {
   randomize(tx_delay, 5000, 9000);
 }
 
-void read_gps(){
-  // read data from the GPS in the 'main loop'
-  char c = GPS.read();
-  // if you want to debug, this is a good time to do it!
-  if (GPSECHO)
-    if (c) Serial.print(c);
-  // if a sentence is received, we can check the checksum, parse it...
-  if (GPS.newNMEAreceived()) {
-    // a tricky thing here is if we print the NMEA sentence, or data
-    // we end up not listening and catching other sentences!
-    // so be very wary if using OUTPUT_ALLDATA and trying to print out data
-    Serial.println(GPS.lastNMEA()); // this also sets the newNMEAreceived() flag to false
-    if (!GPS.parse(GPS.lastNMEA())) // this also sets the newNMEAreceived() flag to false
-      return; // we can fail to parse a sentence in which case we should just wait for another
-  }
-
-  // approximately every 2 seconds or so, print out the current stats
-  if (millis() - timer > 2000) {
-    timer = millis(); // reset the timer
-    Serial.print("\nTime: ");
-    if (GPS.hour < 10) { Serial.print('0'); }
-    Serial.print(GPS.hour, DEC); Serial.print(':');
-    if (GPS.minute < 10) { Serial.print('0'); }
-    Serial.print(GPS.minute, DEC); Serial.print(':');
-    if (GPS.seconds < 10) { Serial.print('0'); }
-    Serial.print(GPS.seconds, DEC); Serial.print('.');
-    if (GPS.milliseconds < 10) {
-      Serial.print("00");
-    } else if (GPS.milliseconds > 9 && GPS.milliseconds < 100) {
-      Serial.print("0");
-    }
-    Serial.println(GPS.milliseconds);
-    Serial.print("Date: ");
-    Serial.print(GPS.day, DEC); Serial.print('/');
-    Serial.print(GPS.month, DEC); Serial.print("/20");
-    Serial.println(GPS.year, DEC);
-    Serial.print("Fix: "); Serial.print((int)GPS.fix);
-    Serial.print(" quality: "); Serial.println((int)GPS.fixquality);
-    if (GPS.fix) {
-      Serial.print("Location: ");
-      Serial.print(GPS.latitude, 4); Serial.print(GPS.lat);
-      Serial.print(", ");
-      Serial.print(GPS.longitude, 4); Serial.println(GPS.lon);
-      Serial.print("Speed (knots): "); Serial.println(GPS.speed);
-      Serial.print("Angle: "); Serial.println(GPS.angle);
-      Serial.print("Altitude: "); Serial.println(GPS.altitude);
-      Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
-    }
-  }
-}
-
 void read_gps(Gps* res){
-
   GPS.begin(9600);
   // uncomment this line to turn on RMC (recommended minimum) and GGA (fix data) including altitude
   GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
@@ -383,37 +300,6 @@ void read_gps(Gps* res){
 }
 
 void read_coords(Gps* res){
-  /*
-  Serial.print("\nTime: ");
-    if (GPS.hour < 10) { Serial.print('0'); }
-    Serial.print(GPS.hour, DEC); Serial.print(':');
-    if (GPS.minute < 10) { Serial.print('0'); }
-    Serial.print(GPS.minute, DEC); Serial.print(':');
-    if (GPS.seconds < 10) { Serial.print('0'); }
-    Serial.print(GPS.seconds, DEC); Serial.print('.');
-    if (GPS.milliseconds < 10) {
-      Serial.print("00");
-    } else if (GPS.milliseconds > 9 && GPS.milliseconds < 100) {
-      Serial.print("0");
-    }
-    Serial.println(GPS.milliseconds);
-    Serial.print("Date: ");
-    Serial.print(GPS.day, DEC); Serial.print('/');
-    Serial.print(GPS.month, DEC); Serial.print("/20");
-    Serial.println(GPS.year, DEC);
-    Serial.print("Fix: "); Serial.print((int)GPS.fix);
-    Serial.print(" quality: "); Serial.println((int)GPS.fixquality);
-    if (GPS.fix) {
-      Serial.print("Location: ");
-      Serial.print(GPS.latitude, 4); Serial.print(GPS.lat);
-      Serial.print(", ");
-      Serial.print(GPS.longitude, 4); Serial.println(GPS.lon);
-      Serial.print("Speed (knots): "); Serial.println(GPS.speed);
-      Serial.print("Angle: "); Serial.println(GPS.angle);
-      Serial.print("Altitude: "); Serial.println(GPS.altitude);
-      Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
-    }
-    */
   res->fix = GPS.fix;
   if (GPS.fix) {
     res->lat = GPS.latitudeDegrees;
@@ -448,27 +334,28 @@ void read_bar(Bar* res){
   res->temperature = ps.readTemperatureC();
 
   // Put height into char[] for send it with aprs packet
-  sprintf(heightpckt, "%07d", (int) res->altitude);
+  snprintf(heightpckt, sizeof(heightpckt), "%07d", (int) res->altitude);
 }
 
-void print_altimu(void){
+void print_sensors(void){
+  Serial.begin(115200);
   char buff[80];
   delay(100);
 
   Serial.println("IMU Values");
-  sprintf(buff, "A: %6d %6d %6d    G: %6d %6d %6d",
+  snprintf(buff, sizeof(buff), "A: %6d %6d %6d    G: %6d %6d %6d",
           a.x, a.y, a.z, g.x, g.y, g.z);
   Serial.println(buff);
   Serial.println("--------------");
 
   Serial.println("MAG Values");
-  sprintf(buff, "M: %6d %6d %6d",
+  snprintf(buff, sizeof(buff), "M: %6d %6d %6d",
           m.x, m.y, m.z);
   Serial.println(buff);
   Serial.println("----------------");
 
   Serial.println("BAR values");
-  sprintf(buff, "Pressure %f mbar     Altitude: %f m     Temperature: %f deg C",
+  snprintf(buff, sizeof(buff), "Pressure %f mbar     Altitude: %f m     Temperature: %f deg C",
           bar.pressure, bar.altitude, bar.temperature);
   Serial.println(buff);
   Serial.println("----------------");
@@ -480,6 +367,9 @@ void print_altimu(void){
     Serial.println("No Fix");
   }
   Serial.println("-----------------");
+
+  Serial.flush();
+  Serial.end();
 }
 
 /*
